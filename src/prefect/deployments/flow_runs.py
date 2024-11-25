@@ -5,6 +5,7 @@ from uuid import UUID
 import anyio
 import pendulum
 from opentelemetry import propagate
+from opentelemetry.context import Context
 
 import prefect
 from prefect.client.schemas import FlowRun
@@ -29,6 +30,18 @@ prefect.client.schemas.StateCreate.model_rebuild(
 )
 
 logger = get_logger(__name__)
+
+
+TRACEPARENT_KEY = "__OTEL_TRACEPARENT"
+
+
+def trace_context_from_run(run: FlowRun) -> Context | None:
+    """Get trace context from run labels if they exist."""
+    if not run.labels or TRACEPARENT_KEY not in run.labels:
+        return None
+
+    carrier = {"traceparent": run.labels[TRACEPARENT_KEY]}
+    return propagate.extract(carrier)
 
 
 @sync_compatible
@@ -160,21 +173,14 @@ async def run_deployment(
     else:
         parent_task_run_id = None
 
-    prefect_context = {"__prefect": {"trace_context": {}}}
     if flow_run_ctx:
-        labels = flow_run_ctx.flow_run.labels
-        prefect_context["__prefect"]["trace_context"] = {
-            "trace_id": labels.get("__OTEL_TRACE_ID"),
-            "span_id": labels.get("__OTEL_SPAN_ID"),
-        }
-    elif task_run_ctx:
-        labels = task_run_ctx.task_run.labels
-        prefect_context["__prefect"]["trace_context"] = {
-            "trace_id": labels.get("__OTEL_TRACE_ID"),
-            "span_id": labels.get("__OTEL_SPAN_ID"),
-        }
+        print("flow_run_ctx", flow_run_ctx.flow_run.labels)
+        trace_context = trace_context_from_run(flow_run_ctx.flow_run)
 
-    propagate.get_global_textmap().inject(prefect_context["__prefect"]["trace_context"])
+    elif task_run_ctx:
+        trace_context = trace_context_from_run(task_run_ctx.task_run)
+
+    propagate.get_global_textmap().inject(trace_context)
 
     flow_run = await client.create_flow_run_from_deployment(
         deployment.id,
@@ -186,7 +192,6 @@ async def run_deployment(
         parent_task_run_id=parent_task_run_id,
         work_queue_name=work_queue_name,
         job_variables=job_variables,
-        context=prefect_context,
     )
 
     flow_run_id = flow_run.id

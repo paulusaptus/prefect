@@ -458,3 +458,30 @@ class TestRunDeployment:
             "trace_id": "test-trace-id",
             "span_id": "test-span-id",
         }
+
+    async def test_propagates_otel_trace_to_child_flow_run(
+        self, test_deployment, use_hosted_api_server, prefect_client: "PrefectClient"
+    ):
+        """Test that OTEL trace context gets propagated from parent flow to child flow run"""
+        deployment = test_deployment
+        mock_traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+        @flow
+        async def parent_flow():
+            # Create a mock trace context
+
+            # Set the trace context in the parent flow's labels
+            flow_run = FlowRunContext.get().flow_run
+            flow_run.labels.update({"__OTEL_TRACEPARENT": mock_traceparent})
+
+            return await run_deployment(
+                f"foo/{deployment.name}",
+                timeout=0,
+                poll_interval=0,
+            )
+
+        parent_state = await parent_flow(return_state=True)
+        child_flow_run = await parent_state.result()
+
+        # Verify the child flow run has the OTEL trace context in its labels
+        assert child_flow_run.labels["__OTEL_TRACEPARENT"] == mock_traceparent
